@@ -1,38 +1,45 @@
 import socket
 import logger
-import safe_socket
-
-_ECHO_SERVER_MESSAGE_SIZE = 1024
+import protocol
 
 
 class Server:
-    def __init__(self, server_host: str, server_port: int) -> None:
+    def __init__(self, server_host: str, server_port: int, lottery) -> None:
         self.server_host = server_host
         self.server_port = server_port
+        self.lottery = lottery
 
     def _handle_client(self, client_socket):
         action = "handle-client"
         message_amount = 0
+        agency_id = None
         try:
             logger.info(action, logger.LogResult.in_progress)
             while True:
-                client_message = safe_socket.recv_all(
-                    client_socket, _ECHO_SERVER_MESSAGE_SIZE
-                )
-                if not client_message:
+                msg_type, payload = protocol.recv_message(client_socket)
+                message_amount += 1
+
+                if msg_type == protocol.MSG_BET:
+                    bets = protocol.parse_bets(payload)
+                    agency_id = bets[0].agency_id
+                    self.lottery.store_bets(bets)
+                elif msg_type == protocol.MSG_FINISH:
+                    winners = [
+                        bet
+                        for bet in self.lottery.load_bets()
+                        if bet.agency_id == agency_id and self.lottery.has_won(bet)
+                    ]
+                    response = protocol.encode_winners(winners)
+                    protocol.send_message(client_socket, protocol.MSG_WINNERS, response)
                     logger.info(
                         action,
                         logger.LogResult.success,
-                        "messages-amount",
-                        message_amount,
+                        "messages-amount", message_amount,
+                        "winners-amount", len(winners),
                     )
                     return
-                message_amount += 1
-                safe_socket.send_all(client_socket, client_message)
         except Exception as e:
-            logger.error(
-                action, logger.LogResult.fail, "messages-amount", message_amount
-            )
+            logger.error(action, logger.LogResult.fail, "messages-amount", message_amount)
             raise e
 
     def run(self):

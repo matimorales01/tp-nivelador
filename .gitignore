@@ -1,3 +1,5 @@
 output/*.csv
 failed_test.log
 .DS_Store
+__pycache__/
+*.pyc

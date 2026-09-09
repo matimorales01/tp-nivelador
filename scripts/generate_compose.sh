@@ -25,6 +25,7 @@ services:
       - PYTHONUNBUFFERED=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - STORAGE_FILE_PATH=/tmp/bets.csv
 EOF
 
 for i in $(seq 0 $((N - 1))); do
@@ -46,6 +47,7 @@ for i in $(seq 0 $((N - 1))); do
       - SERVER_PORT=5678
       - INPUT_FILE=/input/input-$i.csv
       - OUTPUT_FILE=/output/output-$i.csv
+      - BATCH_SIZE=100
 EOF
 done
 

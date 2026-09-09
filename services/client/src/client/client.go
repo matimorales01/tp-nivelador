@@ -1,17 +1,19 @@
 package client
 
 import (
-	"net"
-	"time"
 	"bufio"
+	"errors"
+	"net"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
-	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/protocol"
 )
 
-const CONNECTION_ATTEMPTS_MAX = 3
-const CONNECTION_ATTEMPS_DELAY_MS = 200
+const CONNECTION_ATTEMPTS_MAX = 15
+const CONNECTION_ATTEMPS_DELAY_MS = 500
 
 type ClientConfig struct {
 	ServerHost string
@@ -19,6 +21,7 @@ type ClientConfig struct {
 	AgencyId   string
 	InputFile  string
 	OutputFile string
+	BatchSize  int
 }
 
 type Client struct {
@@ -77,28 +80,36 @@ func (client *Client) Run() error {
 
 	const action = "process-bet"
 	messageId := 0
+	lines := make([]string, 0)
 	scanner := bufio.NewScanner(inputFile)
+	batch := make([]string, 0, client.config.BatchSize)
 	for scanner.Scan() {
 		line := scanner.Text()
-		messageArgs := []any{"agency-id", client.config.AgencyId, "message-id", messageId}
-		logger.Info(action, logger.InProgress, messageArgs...)
+		lines = append(lines, line)
 
-		if err := safe_socket.SendAll(client.conn, []byte(line)); err != nil {
-			logger.Error("send-message", logger.Fail, messageArgs...)
+		payload := protocol.SerializeBet(client.config.AgencyId, line)
+		batch = append(batch, string(payload))
+
+		if len(batch) == client.config.BatchSize {
+			messageArgs := []any{"agency-id", client.config.AgencyId, "message-id", messageId}
+			logger.Info(action, logger.InProgress, messageArgs...)
+
+			batchPayload := []byte(strings.Join(batch, "\n"))
+			if err := protocol.SendMessage(client.conn, protocol.MsgBet, batchPayload); err != nil {
+				logger.Error("send-message", logger.Fail, messageArgs...)
+				return err
+			}
+
+			messageId++
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		batchPayload := []byte(strings.Join(batch, "\n"))
+		if err := protocol.SendMessage(client.conn, protocol.MsgBet, batchPayload); err != nil {
+			logger.Error("send-message", logger.Fail, "agency-id", client.config.AgencyId)
 			return err
 		}
-
-		responseBuffer, err := safe_socket.RecvAll(client.conn, 512)
-		if err != nil {
-			logger.Error("recv-response", logger.Fail, messageArgs...)
-			return err
-		}
-
-		if _, err := outputFile.WriteString(string(responseBuffer) + "\n"); err != nil {
-			logger.Error("write-output", logger.Fail, messageArgs...)
-			return err
-		}
-
 		messageId++
 	}
 	if err := scanner.Err(); err != nil {
@@ -106,6 +117,38 @@ func (client *Client) Run() error {
 		return err
 	}
 
-	logger.Info(action, logger.Success, "agency-id", client.config.AgencyId, "messages-amount", messageId)
+	if err := protocol.SendMessage(client.conn, protocol.MsgFinish, []byte{}); err != nil {
+		logger.Error("send-finish", logger.Fail, "agency-id", client.config.AgencyId)
+		return err
+	}
+
+	msgType, responsePayload, err := protocol.ReadMessage(client.conn)
+	if err != nil {
+		logger.Error("recv-winners", logger.Fail, "agency-id", client.config.AgencyId)
+		return err
+	}
+	if msgType != protocol.MsgWinners {
+		logger.Error("recv-winners", logger.Fail, "agency-id", client.config.AgencyId, "msg-type", msgType)
+		return errors.New("unexpected message type from server")
+	}
+
+	winnerDocs := protocol.ParseWinners(string(responsePayload))
+	winnerSet := make(map[string]struct{})
+	for _, doc := range winnerDocs {
+		winnerSet[doc] = struct{}{}
+	}
+
+	for _, line := range lines {
+		doc := protocol.DocumentFromLine(line)
+		if _, isWinner := winnerSet[doc]; !isWinner {
+			continue
+		}
+		if _, err := outputFile.WriteString(line + "\n"); err != nil {
+			logger.Error("write-output", logger.Fail, "agency-id", client.config.AgencyId)
+			return err
+		}
+	}
+
+	logger.Info(action, logger.Success, "agency-id", client.config.AgencyId, "messages-amount", messageId, "winners-amount", len(winnerDocs))
 	return nil
 }

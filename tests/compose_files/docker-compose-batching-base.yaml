@@ -18,6 +18,7 @@ services:
       - AGENCY_QUORUM_MIN=1
       - SERVER_HOST=server
       - SERVER_PORT=5678
+      - STORAGE_FILE_PATH=/tmp/bets.csv
 
   client_0:
     build:
