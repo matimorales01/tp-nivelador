@@ -3,9 +3,11 @@ package client
 import (
 	"bufio"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,8 +20,8 @@ import (
 const CONNECTION_ATTEMPTS_MAX = 15
 const CONNECTION_ATTEMPS_DELAY_MS = 500
 
-const OUTPUT_FILE_ATTEMPTS_MAX = 30
-const OUTPUT_FILE_ATTEMPS_DELAY_MS = 500
+const OUTPUT_FILE_ATTEMPTS_MAX = 60
+const OUTPUT_FILE_ATTEMPS_DELAY_MS = 1000
 
 type ClientConfig struct {
 	ServerHost string
@@ -129,21 +131,12 @@ func (client *Client) Run() error {
 	}
 	defer inputFile.Close()
 
-	outputFile, err := createOutputFile(client.config.OutputFile)
-	if err != nil {
-		logger.Error("open-output-file", logger.Fail, "err", err)
-		return err
-	}
-	defer outputFile.Close()
-
 	const action = "process-bet"
 	messageId := 0
-	lines := make([]string, 0)
 	scanner := bufio.NewScanner(inputFile)
 	batch := make([]string, 0, client.config.BatchSize)
 	for scanner.Scan() {
 		line := scanner.Text()
-		lines = append(lines, line)
 
 		payload := protocol.SerializeBet(client.config.AgencyId, line)
 		batch = append(batch, string(payload))
@@ -160,6 +153,10 @@ func (client *Client) Run() error {
 
 			messageId++
 			batch = batch[:0]
+
+			if messageId%25 == 0 {
+				debug.FreeOSMemory()
+			}
 		}
 	}
 	if len(batch) > 0 {
@@ -196,7 +193,20 @@ func (client *Client) Run() error {
 		winnerSet[doc] = struct{}{}
 	}
 
-	for _, line := range lines {
+	outputFile, err := createOutputFile(client.config.OutputFile)
+	if err != nil {
+		logger.Error("open-output-file", logger.Fail, "err", err)
+		return err
+	}
+	defer outputFile.Close()
+
+	if _, err := inputFile.Seek(0, io.SeekStart); err != nil {
+		logger.Error("seek-input-file", logger.Fail, "err", err)
+		return err
+	}
+	winnersScanner := bufio.NewScanner(inputFile)
+	for winnersScanner.Scan() {
+		line := winnersScanner.Text()
 		doc := protocol.DocumentFromLine(line)
 		if _, isWinner := winnerSet[doc]; !isWinner {
 			continue
@@ -205,6 +215,10 @@ func (client *Client) Run() error {
 			logger.Error("write-output", logger.Fail, "agency-id", client.config.AgencyId)
 			return err
 		}
+	}
+	if err := winnersScanner.Err(); err != nil {
+		logger.Error(action, logger.Fail, "err", err)
+		return err
 	}
 
 	logger.Info(action, logger.Success, "agency-id", client.config.AgencyId, "messages-amount", messageId, "winners-amount", len(winnerDocs))

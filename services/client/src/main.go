@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"runtime/debug"
 	"strconv"
 
 	client "github.com/7574-sistemas-distribuidos/tp-nivelador/src/client"
@@ -83,5 +84,6 @@ func run() int {
 }
 
 func main() {
+	debug.SetGCPercent(10)
 	os.Exit(run())
 }

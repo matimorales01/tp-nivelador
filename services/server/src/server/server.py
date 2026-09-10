@@ -82,6 +82,9 @@ class Server:
             server_socket.bind((self.server_host, self.server_port))
             server_socket.listen()
             while True:
+                if self._shutdown_event.is_set():
+                    logger.info(action, logger.LogResult.success, "reason", "sigterm")
+                    return
                 try:
                     logger.info(action, logger.LogResult.in_progress)
                     client_socket, _ = server_socket.accept()
