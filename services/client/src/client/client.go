@@ -102,8 +102,6 @@ func (client *Client) connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
-// createOutputFile reintenta la apertura porque el volumen montado por Docker
-// a veces no queda disponible en el instante justo en que arranca el container.
 func createOutputFile(path string) (*os.File, error) {
 	const action = "open-output-file"
 	var err error
