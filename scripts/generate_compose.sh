@@ -26,6 +26,7 @@ services:
       - SERVER_HOST=server
       - SERVER_PORT=5678
       - STORAGE_FILE_PATH=/tmp/bets.csv
+      - AGENCY_QUORUM_MIN=$N
 EOF
 
 for i in $(seq 0 $((N - 1))); do
