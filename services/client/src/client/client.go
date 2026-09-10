@@ -5,7 +5,10 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -14,6 +17,9 @@ import (
 
 const CONNECTION_ATTEMPTS_MAX = 15
 const CONNECTION_ATTEMPS_DELAY_MS = 500
+
+const OUTPUT_FILE_ATTEMPTS_MAX = 30
+const OUTPUT_FILE_ATTEMPS_DELAY_MS = 500
 
 type ClientConfig struct {
 	ServerHost string
@@ -25,28 +31,61 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	conn   net.Conn
-	config ClientConfig
+	conn         net.Conn
+	config       ClientConfig
+	shuttingDown bool
+	mu           sync.Mutex
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
-	conn, err := connectToServer(config.ServerHost, config.ServerPort)
+	client := &Client{config: config}
+	client.watchShutdown()
+
+	conn, err := client.connectToServer(config.ServerHost, config.ServerPort)
 	if err != nil {
 		logger.Warn("connect-to-server", logger.Fail)
-		return nil, err
+		return client, err
 	}
 
-	client := &Client{conn: conn, config: config}
+	client.mu.Lock()
+	client.conn = conn
+	client.mu.Unlock()
 	return client, nil
 }
 
-func connectToServer(host, port string) (net.Conn, error) {
+func (client *Client) watchShutdown() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		client.mu.Lock()
+		client.shuttingDown = true
+		conn := client.conn
+		client.mu.Unlock()
+		logger.Info("shutdown", logger.InProgress, "signal", "SIGTERM")
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+}
+
+func (client *Client) IsShuttingDown() bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return client.shuttingDown
+}
+
+func (client *Client) connectToServer(host, port string) (net.Conn, error) {
 	const action = "connect-to-server"
 	var err error
 	var conn net.Conn
 
 	logger.Info(action, logger.InProgress)
 	for i := range CONNECTION_ATTEMPTS_MAX {
+		if client.IsShuttingDown() {
+			return nil, errors.New("shutting down")
+		}
+
 		conn, err = net.Dial("tcp", host+":"+port)
 		if err != nil {
 			logger.Warn(action, logger.Fail, "attempt", i)
@@ -61,6 +100,25 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
+// createOutputFile reintenta la apertura porque el volumen montado por Docker
+// a veces no queda disponible en el instante justo en que arranca el container.
+func createOutputFile(path string) (*os.File, error) {
+	const action = "open-output-file"
+	var err error
+	var file *os.File
+
+	for i := range OUTPUT_FILE_ATTEMPTS_MAX {
+		file, err = os.Create(path)
+		if err == nil {
+			return file, nil
+		}
+		logger.Warn(action, logger.Fail, "attempt", i)
+		time.Sleep(OUTPUT_FILE_ATTEMPS_DELAY_MS * time.Millisecond)
+	}
+
+	return nil, err
+}
+
 func (client *Client) Run() error {
 	defer client.conn.Close()
 
@@ -71,7 +129,7 @@ func (client *Client) Run() error {
 	}
 	defer inputFile.Close()
 
-	outputFile, err := os.Create(client.config.OutputFile)
+	outputFile, err := createOutputFile(client.config.OutputFile)
 	if err != nil {
 		logger.Error("open-output-file", logger.Fail, "err", err)
 		return err
